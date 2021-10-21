@@ -22,42 +22,48 @@ class AsyncStateClass<T> {
 
 //
 //
-export type AsyncState<T> = UseState<T> | UseConstant<T>
+export type AsyncState<T> = ObservableState<T> | ConstantState<T>
 
 //
 //
 export type AsAsyncState<A extends unknown> =
-	[A] extends [UseState<infer T>] ? ([UseState<T>] extends [A] ? UseState<T> : never) :
-	[A] extends [UseConstant<infer T>] ? ([UseConstant<T>] extends [A] ? UseConstant<T> : never) :
+	[A] extends [ObservableState<infer T>] ? ([ObservableState<T>] extends [A] ? ObservableState<T> : never) :
+	[A] extends [ConstantState<infer T>] ? ([ConstantState<T>] extends [A] ? ConstantState<T> : never) :
 	never
 
 //
 //
-export function isAsyncState(s: unknown): s is AsyncStateClass<unknown> {
+export function isAsyncState(s: unknown): s is ConstantState<unknown> | ObservableState<unknown> {
 	return s instanceof AsyncStateClass
 }
 
 //
 //
-export function isUseConstant(s: unknown): s is UseConstant<unknown> {
-	return s instanceof UseConstant
+export function isConstantState(s: unknown): s is ConstantState<unknown> {
+	return s instanceof ConstantState
 }
 
 //
 //
-export function isUseState(s: unknown): s is UseState<unknown> {
-	return s instanceof UseState
+export function isObservableState(s: unknown): s is ObservableState<unknown> {
+	return s instanceof ObservableState
 }
 
 //
 //
-class UseConstant<T> extends AsyncStateClass<NotPromise<T>> {
-	constructor(value: NotPromise<T>) {
-		super(true, value)
+class ConstantState<T> extends AsyncStateClass<T> {
+	constructor(value: T) {
+		if (!isAsyncState(value)) {
+			super(true, value)
+		} else {
+			throw new Error("cannot use state as scalar")
+		}
 	}
 
-	static create<T>(value: NotPromise<T>): UseConstant<T> {
-		return new UseConstant<T>(value)
+	static create<T extends AsyncState<unknown>>(value: T): unknown
+	static create<T>(value: T): ConstantState<T>
+	static create<T>(value: T): ConstantState<T> {
+		return new ConstantState<T>(value)
 	}
 
 	async *[Symbol.asyncIterator](): AsyncIterator<T> {
@@ -65,17 +71,9 @@ class UseConstant<T> extends AsyncStateClass<NotPromise<T>> {
 			yield this.syncReadInitialValue()!
 		}
 	}
-
-	get initialValue() {
-		return this._initialValue
-	}
-
-	get hasTheOnlyValue() {
-		return this._hasInitialValue
-	}
 }
 
-export const useConstant = UseConstant.create
+export const useConstant = ConstantState.create
 
 //
 //
@@ -86,24 +84,24 @@ type Push<T> = {
 
 //
 //
-class UseState<T> extends AsyncStateClass<T> {
+class ObservableState<T> extends AsyncStateClass<T> {
 	_async = new Async<T>()
 
-	static create<T>(): [AsyncIterable<T>, Push<T>]
+	static create<T>(): [ObservableState<T>, Push<T>]
 	static create<T extends AsyncState<unknown>>(value: T): unknown
-	static create<T>(value: T | PromiseLike<T>): [AsyncIterable<T>, Push<T>]
-	static create<T>(...values: Array<T | PromiseLike<T>>): [AsyncIterable<T>, Push<T>] {
-		let that: UseState<T>
+	static create<T>(value: T | PromiseLike<T>): [ObservableState<T>, Push<T>]
+	static create<T>(...values: Array<T | PromiseLike<T>>): [ObservableState<T>, Push<T>] {
+		let that: ObservableState<T>
 		if (!isAsyncState(values[0])) {
 			if (values.length > 0) {
 				if (!isThenable(values[0])) {
-					that = new UseState<T>(true, values[0] as T)
+					that = new ObservableState<T>(true, values[0] as T)
 				} else {
-					that = new UseState<T>(false, undefined)
+					that = new ObservableState<T>(false, undefined)
 					that._async.push(values[0]!)
 				}
 			} else {
-				that = new UseState<T>(false, undefined)
+				that = new ObservableState<T>(false, undefined)
 			}
 		} else {
 			throw new Error("cannot use state as scalar")
@@ -123,7 +121,7 @@ class UseState<T> extends AsyncStateClass<T> {
 	}
 }
 
-export const useState = UseState.create
+export const useState = ObservableState.create
 
 {const x = useState(1)}
 {const x = useState(useConstant(2))}

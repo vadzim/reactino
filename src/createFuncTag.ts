@@ -1,35 +1,51 @@
-import { useConstant, useState } from './asyncState'
-import { isAsyncIterable } from './isAsyncIterable'
+import { useConstant, useState, isAsyncState, isConstantState, isObservableState } from './asyncState'
 
-export function createFuncTag(type: Function, attributes: object, children: unknown) {
-	let isObservable = false
+export function createFuncTag(type: (attributes: object) => unknown, attributes: object, children: unknown) {
+	let isObservableResult = false
+	let done = false
 	const values = new Map()
 
-	let callbacks: Array<(result: boolean | PromiseLike<boolean>) => void>
+	let callbacks: Array<(result: PromiseLike<unknown>) => void>
+	let lastBuffer: AsyncIterable<unknown> | undefined
 
-	async function runCopyLoop(buffer: AsyncIterable<unknown>): Promise<void> {
+	async function runCopyLoop(buffer: AsyncIterable<unknown>, cb?: Function): Promise<void> {
+		lastBuffer = buffer
 		await undefined // wait for updateResult to be assigned
-		for await (const item of buffer) {
-			if (!await updateResult(item)) {
-				break
+		try {
+			for await (const item of buffer) {
+				if (lastBuffer !== buffer) break
+				if (!await updateResult(item)) {
+					done = true
+					if (lastBuffer === buffer) {
+						lastBuffer = undefined
+					}
+					break
+				}
+				if (cb) {
+					cb()
+					cb = undefined
+				}
+				if (lastBuffer !== buffer) break
 			}
+		} finally {
+			cb?.()
 		}
 	}
 
 	function updateValues(): void {
-		const nextAttributes = Object.fromEntries(values)
 		const cbs = callbacks.splice(0)
-		const nextResult = type(Object.fromEntries(values))
-		let ret: Promise<boolean>
-		if (!isAsyncIterable(nextResult)) {
+		const nextAttributes = Object.fromEntries(values)
+		const nextResult = type(nextAttributes)
+		let ret: Promise<unknown>
+		if (!isAsyncState(nextResult)) {
 			ret = updateResult(nextResult)
 		} else {
-			ret = 
+			ret = new Promise(resolve => runCopyLoop(nextResult, resolve))
 		}
 		for (const cb of cbs) cb(ret)
 	}
 
-	function onValuesChanged(callback: (result: boolean | PromiseLike<boolean>) => void): void {
+	function onValuesChanged(callback: (result: PromiseLike<unknown>) => void): void {
 		(callbacks ??= []).push(callback)
 		if (callbacks.length === 1) {
 			setImmediate(updateValues)
@@ -37,11 +53,12 @@ export function createFuncTag(type: Function, attributes: object, children: unkn
 	}
 
 	async function runAttributeUpdateLoop(property: string, value$: AsyncIterable<unknown>): Promise<void> {
+		if (done) return
 		for await (const value of value$) {
+			if (done) break
 			values.set(property, value)
-			if (!await new Promise(onValuesChanged)) {
-				break
-			}
+			await new Promise(onValuesChanged)
+			if (done) break
 		}
 	}
 
@@ -55,14 +72,14 @@ export function createFuncTag(type: Function, attributes: object, children: unkn
 			if (values.has(property)) {
 				return values.get(property)
 			}
-			let value = undefined
+			let value: unknown = undefined
 			if (property.endsWith("$")) {
 				const key = property.slice(0, -1)
 				if (values.has(key)) {
 					throw new Error(`either ${property} or ${key} attribute should be used, but not both`)
 				}
 				value = getAttribute(key)
-				if (value !== undefined /* let default function params work */ && !isAsyncIterable(value)) {
+				if (value !== undefined /* let default function params work */ && !isAsyncState(value)) {
 					value = useConstant(value)
 				}
 			} else {
@@ -71,13 +88,13 @@ export function createFuncTag(type: Function, attributes: object, children: unkn
 					throw new Error(`either ${property} or ${key} attribute should be used, but not both`)
 				}
 				value = getAttribute(property)
-				if (isAsyncIterable(value)) {
-					if (values.hasTheOnlyValue) {
-						value = value.initialValue
+				if (isAsyncState(value)) {
+					if (!isObservableState(value)) {
+						value = value.syncReadInitialValue()
 					} else {
-						isObservable = true
+						isObservableResult = true
 						const value$ = value
-						value = value.syncReadInitialValue?.()
+						value = value.syncReadInitialValue()
 						runAttributeUpdateLoop(property, value$)
 					}
 				}
@@ -88,11 +105,16 @@ export function createFuncTag(type: Function, attributes: object, children: unkn
 	})
 
 	let result = type(attr)
-	if (!isObservable) {
+
+	if (isConstantState(result)) {
+		result = result.syncReadInitialValue()
+	}
+
+	if (!isObservableResult) {
 		return result
 	}
 
-	if (isAsyncIterable(result)) {
+	if (isObservableState(result)) {
 		runCopyLoop(result)
 		result = result.syncReadInitialValue()
 	}
