@@ -13,8 +13,10 @@ export class Async<T> implements AsyncIterable<T> {
 					const rec = this.#buffer.shift()!
 					rec.cb(true)
 					promise = rec.value
-				} else {
+				} else if (!this.#closed) {
 					promise = new Promise(resolve => { this.#waitcb = resolve })
+				} else {
+					break
 				}
 				const value = await promise
 				if (value === ASYNC_STOP) {
@@ -28,6 +30,20 @@ export class Async<T> implements AsyncIterable<T> {
 				this.#buffer.shift()!.cb(false)
 			}
 		}
+	}
+
+	readBuffer() {
+		let buffer: Array<T | PromiseLike<T>> | undefined
+		while (this.#buffer?.length) {
+			const rec = this.#buffer.shift()!
+			rec.cb(true)
+			if (rec.value !== ASYNC_STOP) {
+				(buffer ??= []).push(rec.value as T | PromiseLike<T>)
+			} else {
+				break
+			}
+		}
+		return buffer
 	}
 
 	push(): Promise<boolean>

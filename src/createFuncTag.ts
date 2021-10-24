@@ -1,11 +1,11 @@
 import { useConstant, useState, isAsyncState, isConstantState, isObservableState } from './asyncState'
+import { objectState } from './objectState'
 
 export function createFuncTag(type: (attributes: object) => unknown, attributes: object, children: unknown) {
 	let isObservableResult = false
 	let done = false
 	const values = new Map()
 
-	let callbacks: Array<(result: PromiseLike<unknown>) => void>
 	let lastBuffer: AsyncIterable<unknown> | undefined
 
 	async function runCopyLoop(buffer: AsyncIterable<unknown>, cb?: Function): Promise<void> {
@@ -43,23 +43,6 @@ export function createFuncTag(type: (attributes: object) => unknown, attributes:
 			ret = new Promise(resolve => runCopyLoop(nextResult, resolve))
 		}
 		for (const cb of cbs) cb(ret)
-	}
-
-	function onValuesChanged(callback: (result: PromiseLike<unknown>) => void): void {
-		(callbacks ??= []).push(callback)
-		if (callbacks.length === 1) {
-			setImmediate(updateValues)
-		}
-	}
-
-	async function runAttributeUpdateLoop(property: string, value$: AsyncIterable<unknown>): Promise<void> {
-		if (done) return
-		for await (const value of value$) {
-			if (done) break
-			values.set(property, value)
-			await new Promise(onValuesChanged)
-			if (done) break
-		}
 	}
 
 	const getAttribute = (key: string) => Object.hasOwn(attributes, key) ? attributes[key] : key === "children" ? children : undefined
