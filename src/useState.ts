@@ -1,25 +1,25 @@
 //
 //
-let currentEffect: Effect<unknown> | undefined
-let backupEffects: Map<State<unknown>, Effect<unknown>> | undefined
-const dirtyEffects: Effect<unknown>[] = []
+let currentCalculation: Calculation<unknown> | undefined
+let backupCalculations: Map<State<unknown>, Calculation<unknown>> | undefined
+const dirtyCalculations: Calculation<unknown>[] = []
 
-function runEffects(length?: number): void {
-	if (length !== dirtyEffects.length) {
-		return dirtyEffectsChanged()
+function runCalculations(length?: number): void {
+	if (length !== dirtyCalculations.length) {
+		return dirtyCalculationsChanged()
 	}
-	dirtyEffects.sort((effect1, effect2) => effect1._rank - effect2._rank)
-	while (dirtyEffects.length > 0) {
-		const currentLength = dirtyEffects.length
-		dirtyEffects.shift()!.update()
-		if (currentLength !== dirtyEffects.length) {
-			return dirtyEffectsChanged()
+	dirtyCalculations.sort((effect1, effect2) => effect1._rank - effect2._rank)
+	while (dirtyCalculations.length > 0) {
+		const currentLength = dirtyCalculations.length
+		dirtyCalculations.shift()!.update()
+		if (currentLength !== dirtyCalculations.length) {
+			return dirtyCalculationsChanged()
 		}
 	}
 }
 
-function dirtyEffectsChanged(): void {
-	Promise.resolve(dirtyEffects.length).then(runEffects)
+function dirtyCalculationsChanged(): void {
+	Promise.resolve(dirtyCalculations.length).then(runCalculations)
 }
 
 //
@@ -27,14 +27,14 @@ function dirtyEffectsChanged(): void {
 class State<T> {
 	_isError: boolean = false
 	_value: T
-	_subscriptions: Set<Effect<unknown>> = new Set()
-	_currentEffect?: Effect<unknown> = undefined
-	_owner?: Effect<unknown> = undefined
+	_subscriptions: Set<Calculation<unknown>> = new Set()
+	_currentCalculation?: Calculation<unknown> = undefined
+	_owner?: Calculation<unknown> = undefined
 
 	constructor(value: T) {
 		this._value = value
-		if (currentEffect) {
-			(currentEffect._children ??= []).push(this)
+		if (currentCalculation) {
+			(currentCalculation._children ??= []).push(this)
 		}
 	}
 
@@ -43,21 +43,21 @@ class State<T> {
 			throw new Error('state is already destroyed')
 		}
 
-		if (!currentEffect) {
+		if (!currentCalculation) {
 			throw new Error("a state can be read only in an effect")
 		}
 
 		this._owner?.update()
 		
-		if (this._currentEffect !== currentEffect) {
-			if (this._currentEffect) {
-				(backupEffects ??= new Map()).set(this, this._currentEffect)
+		if (this._currentCalculation !== currentCalculation) {
+			if (this._currentCalculation) {
+				(backupCalculations ??= new Map()).set(this, this._currentCalculation)
 			}
-			this._currentEffect = currentEffect
-			this._subscriptions.add(currentEffect)
-			currentEffect._dependencies.add(this)
-			if (this._owner && currentEffect._rank <= this._owner._rank) {
-				currentEffect._rank = this._owner._rank + 1
+			this._currentCalculation = currentCalculation
+			this._subscriptions.add(currentCalculation)
+			currentCalculation._dependencies.add(this)
+			if (this._owner && currentCalculation._rank <= this._owner._rank) {
+				currentCalculation._rank = this._owner._rank + 1
 			}
 		}
 
@@ -73,7 +73,7 @@ class State<T> {
 			throw new Error('state is already destroyed')
 		}
 
-		if (currentEffect && currentEffect !== this._owner) {
+		if (currentCalculation && currentCalculation !== this._owner) {
 			throw new Error("cannot update a state in an effect")
 		}
 
@@ -82,9 +82,9 @@ class State<T> {
 			this._value = value
 			for (const effect of this._subscriptions) if (!effect._dirty) {
 				effect._dirty = true
-				dirtyEffects.push(effect)
-				if (dirtyEffects.length === 1) {
-					dirtyEffectsChanged()
+				dirtyCalculations.push(effect)
+				if (dirtyCalculations.length === 1) {
+					dirtyCalculationsChanged()
 				}
 			}
 			this._subscriptions.clear()
@@ -120,7 +120,7 @@ class State<T> {
 
 //
 //
-class Effect<T> {
+class Calculation<T> {
 	_proc: () => T
 	_state: State<T>
 	_dependencies: Set<State<unknown>> = new Set()
@@ -140,10 +140,10 @@ class Effect<T> {
 		}
 
 		if (this._dirty) {
-			const parentEffect = currentEffect
-			const parentBackupEffects = backupEffects
-			backupEffects = undefined
-			currentEffect = this
+			const parentCalculation = currentCalculation
+			const parentBackupCalculations = backupCalculations
+			backupCalculations = undefined
+			currentCalculation = this
 			this._destroyChildren()
 			this._rank = 0
 			try {
@@ -152,16 +152,16 @@ class Effect<T> {
 				this._state.throw(error)
 			}
 			this._dirty = false
-			currentEffect = parentEffect
+			currentCalculation = parentCalculation
 			for (const state of this._dependencies) {
-				if (state._currentEffect === this) {
-					state._currentEffect = backupEffects!?.get(state)
+				if (state._currentCalculation === this) {
+					state._currentCalculation = backupCalculations!?.get(state)
 				} else {
 					state._subscriptions.delete(this)
 					this._dependencies.delete(state)
 				}
 			}
-			backupEffects = parentBackupEffects
+			backupCalculations = parentBackupCalculations
 		}
 	}
 
@@ -185,6 +185,20 @@ class Effect<T> {
 
 //
 //
+class Effect extends Calculation<(() => void) | undefined> {
+	_destroyChildren() {
+		const cb = this._state._value
+		this._state._value = undefined
+		try {
+			cb?.()
+		} finally {
+			super._destroyChildren()
+		}
+	}
+}
+
+//
+//
 export function useState<T>(initial: T): [() => T, (value: T) => void] {
 	const state = new State(initial)
 	const read = state.read.bind(state)
@@ -195,7 +209,7 @@ export function useState<T>(initial: T): [() => T, (value: T) => void] {
 //
 //
 export function use<T>(proc: () => T): () => T {
-	const effect = new Effect<T>(proc, undefined!)
+	const effect = new Calculation<T>(proc, undefined!)
 	const read = effect._state.read.bind(effect._state)
 	return read
 }
@@ -203,7 +217,7 @@ export function use<T>(proc: () => T): () => T {
 //
 //
 export function useEffect(proc: () => void | (() => void)): void {
-	const effect = new Effect<void>(proc, undefined)
+	const effect = new Calculation<void>(proc, undefined)
 	const resume = effect._state.read.bind(effect._state)
 	resume()
 }
@@ -211,7 +225,7 @@ export function useEffect(proc: () => void | (() => void)): void {
 //
 //
 export function useRootEffect(proc: () => void): [/*resume*/() => void, /*suspend*/() => void] {
-	const effect = new Effect<void>(proc, undefined)
+	const effect = new Calculation<void>(proc, undefined)
 	const resume = effect._state.read.bind(effect._state)
 	const suspend = effect._state.suspend.bind(effect._state)
 	resume()
